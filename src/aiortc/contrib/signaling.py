@@ -376,13 +376,13 @@ def add_signaling_arguments(parser):
     parser.add_argument(
         "--signaling",
         "-s",
-        choices=["apprtc", "copy-and-paste", "tcp-socket", "unix-socket"],
+        choices=["apprtc", "copy-and-paste", "tcp-socket", "unix-socket", "node-dss"],
     )
     parser.add_argument(
-        "--signaling-host", default="127.0.0.1", help="Signaling host (tcp-socket only)"
+        "--signaling-host", default="127.0.0.1", help="Signaling host (tcp-socket/node-dss only)"
     )
     parser.add_argument(
-        "--signaling-port", default=1234, help="Signaling port (tcp-socket only)"
+        "--signaling-port", default=1234, help="Signaling port (tcp-socket/node-dss only)"
     )
     parser.add_argument(
         "--signaling-path",
@@ -391,6 +391,12 @@ def add_signaling_arguments(parser):
     )
     parser.add_argument(
         "--signaling-room", default=None, help="Signaling room (apprtc only)"
+    )
+    parser.add_argument(
+        "--local-peer", default=None, help="Local peer id"
+    )
+    parser.add_argument(
+        "--remote-peer", default=None, help="Remote peer id"
     )
 
 
@@ -410,5 +416,11 @@ def create_signaling(args):
         return TcpSocketSignaling(args.signaling_host, args.signaling_port)
     elif args.signaling == "unix-socket":
         return UnixSocketSignaling(args.signaling_path)
+    elif args.signaling == "node-dss":
+        return NodeDSSSignaling(
+            f'http://{args.signaling_host}:{args.signaling_port}',
+            args.local_peer,
+            args.remote_peer
+        )
     else:
         return CopyAndPasteSignaling()
