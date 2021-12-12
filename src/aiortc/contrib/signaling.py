@@ -23,7 +23,7 @@ def object_from_string(message_str):
     message = json.loads(message_str)
     if message["type"] in ["answer", "offer"]:
         return RTCSessionDescription(**message)
-    elif message["type"] == "candidate" and message["candidate"]:
+    elif message["type"] == "candidate" and message.get("candidate"):
         candidate = candidate_from_sdp(message["candidate"].split(":", 1)[1])
         candidate.sdpMid = message["id"]
         candidate.sdpMLineIndex = message["label"]
@@ -257,6 +257,116 @@ class UnixSocketSignaling:
         await self._connect(True)
         data = object_to_string(descr).encode("utf8")
         self._writer.write(data + b"\n")
+
+
+class NodeDSSSignaling:
+    def __init__(self, signal_server, local_peer, remote_peer):
+        self._http = None
+        self._signal_server = signal_server
+        self.local_peer = local_peer
+        self.remote_peer = remote_peer
+
+        self.__post_url = self._signal_server + "/data/" + self.remote_peer
+        self.__get_url = self._signal_server + "/data/" + self.local_peer
+
+    @staticmethod
+    def _standardize_message_str(message_str: str) -> str:
+        """
+        Microsoft has their own separate spec for the keys
+        sent in the SDP negotiation:
+
+        'type' is known as the enum 'MessageType':
+            - 0: Unknown message
+            - 1: Offer message
+            - 2: Answer message
+            - 3: Candidate Message
+        'sdp' is known as 'Data'
+        """
+        message_type_mapping = {
+            0: 'unknown',
+            1: 'offer',
+            2: 'answer',
+            3: 'candidate'
+        }
+        message = json.loads(message_str)
+
+        # Update type field
+        message['type'] = message_type_mapping[message.pop('MessageType')]
+
+        # Drop + store IceDataSeparate field if exists
+        ice_separator = message.pop('IceDataSeparator', None)
+
+        # Offer/answer formats
+        if message['type'] in ['answer', 'offer']:
+            # Update sdp field
+            message['sdp'] = message.pop('Data')
+
+        # Candidate formats
+        elif message['type'] == 'candidate' and ice_separator:
+            # Converts:
+            # label -> SdpMlineIndex
+            # id -> SdpMid
+            message['candidate'], message['label'], message['id'] = message.pop('Data').split(ice_separator)
+
+        return json.dumps(message)
+
+    @staticmethod
+    def _create_compliant_message(message_str: str) -> str:
+        """
+        Reverse operation of `_standardize_response_str`
+        """
+        message_type_mapping = {
+            'unknown': 0,
+            'offer': 1,
+            'answer': 2,
+            'candidate': 3
+        }
+        message = json.loads(message_str)
+
+        type = message.pop("type")
+        # Update type to 'MessageType' enum
+        message['MessageType'] = message_type_mapping[type]
+
+        if type in ["answer", "offer"]:
+            # Update sdp field to 'Data'
+            message['Data'] = message.pop('sdp')
+            # Ice separator
+            message['IceDataSeparator'] = ""
+
+        elif type == 'candidate':
+            ice_separator = "|"  # this  is hard-coded into Microsoft's code.
+            message['IceDataSeparator'] = ice_separator
+            message['Data'] = f'{message.pop("candidate")}{ice_separator}' \
+                              f'{message.pop("label")}{ice_separator}' \
+                              f'{message.pop("id")}'
+
+        return json.dumps(message)
+
+    async def connect(self):
+        self._http = aiohttp.ClientSession()
+
+    async def close(self):
+        if self._http:
+            await self._http.close()
+
+    async def receive(self):
+        async with self._http.get(self.__get_url) as response:
+            # we cannot use response.json() due to:
+            # https://github.com/webrtc/apprtc/issues/562
+            message = await response.text()
+            if not message:
+                return
+            # Make compliant
+            message = self._standardize_message_str(message)
+        logger.info("< " + str(message))
+        return object_from_string(message)
+
+    async def send(self, obj):
+        message = object_to_string(obj)
+        # Make compliant
+        message = self._create_compliant_message(message)
+        logger.info("> " + message)
+        await self._http.post(self.__post_url, data=message)
 
 
 def add_signaling_arguments(parser):
